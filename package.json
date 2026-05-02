@@ -1,0 +1,72 @@
+{
+  "name": "event-notification-platform",
+  "version": "0.1.0",
+  "private": true,
+  "description": "NestJS event notification platform with RabbitMQ and Telegram integration.",
+  "license": "UNLICENSED",
+  "scripts": {
+    "build": "nest build producer && nest build consumer",
+    "start:producer": "node dist/apps/producer/main.js",
+    "start:producer:dev": "nest start producer --watch",
+    "start:consumer": "node dist/apps/consumer/main.js",
+    "start:consumer:dev": "nest start consumer --watch",
+    "lint": "eslint \"{apps,libs}/**/*.ts\"",
+    "format": "prettier --write \"{apps,libs}/**/*.ts\" \"*.{json,md,yml}\"",
+    "test": "jest",
+    "test:watch": "jest --watch"
+  },
+  "dependencies": {
+    "@nestjs/common": "^10.0.0",
+    "@nestjs/config": "^3.0.0",
+    "@nestjs/core": "^10.0.0",
+    "@nestjs/platform-express": "^10.0.0",
+    "amqplib": "^1.0.3",
+    "class-transformer": "^0.5.1",
+    "class-validator": "^0.14.0",
+    "reflect-metadata": "^0.2.0",
+    "rxjs": "^7.8.0"
+  },
+  "devDependencies": {
+    "@nestjs/cli": "^10.0.0",
+    "@nestjs/schematics": "^10.0.0",
+    "@nestjs/testing": "^10.0.0",
+    "@types/amqplib": "^0.10.8",
+    "@types/jest": "^29.5.0",
+    "@types/node": "^20.0.0",
+    "@typescript-eslint/eslint-plugin": "^7.0.0",
+    "@typescript-eslint/parser": "^7.0.0",
+    "eslint": "^8.57.0",
+    "eslint-config-prettier": "^9.0.0",
+    "eslint-plugin-prettier": "^5.0.0",
+    "jest": "^29.7.0",
+    "prettier": "^3.0.0",
+    "source-map-support": "^0.5.21",
+    "ts-jest": "^29.1.0",
+    "ts-loader": "^9.5.0",
+    "ts-node": "^10.9.0",
+    "tsconfig-paths": "^4.2.0",
+    "typescript": "^5.3.0"
+  },
+  "jest": {
+    "moduleFileExtensions": [
+      "js",
+      "json",
+      "ts"
+    ],
+    "rootDir": ".",
+    "testRegex": ".*\\.spec\\.ts$",
+    "transform": {
+      "^.+\\.(t|j)s$": "ts-jest"
+    },
+    "collectCoverageFrom": [
+      "apps/**/*.ts",
+      "libs/**/*.ts"
+    ],
+    "coverageDirectory": "./coverage",
+    "testEnvironment": "node",
+    "moduleNameMapper": {
+      "^@app/shared$": "<rootDir>/libs/shared/src",
+      "^@app/shared/(.*)$": "<rootDir>/libs/shared/src/$1"
+    }
+  }
+}

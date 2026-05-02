@@ -1,0 +1,61 @@
+services:
+  rabbitmq:
+    image: rabbitmq:3-management
+    container_name: event-notification-rabbitmq
+    ports:
+      - '5672:5672'
+      - '15672:15672'
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_DEFAULT_USER:-guest}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_DEFAULT_PASS:-guest}
+    healthcheck:
+      test: ['CMD', 'rabbitmq-diagnostics', '-q', 'ping']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  producer:
+    build:
+      context: .
+      dockerfile: apps/producer/Dockerfile
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    ports:
+      - '${PRODUCER_PORT:-3000}:3000'
+    environment:
+      NODE_ENV: ${NODE_ENV:-development}
+      PRODUCER_PORT: 3000
+      RABBITMQ_URL: ${RABBITMQ_URL:-amqp://guest:guest@rabbitmq:5672}
+      RABBITMQ_EXCHANGE: ${RABBITMQ_EXCHANGE:-events.exchange}
+      RABBITMQ_ROUTING_KEY: ${RABBITMQ_ROUTING_KEY:-events.notification}
+      RABBITMQ_QUEUE: ${RABBITMQ_QUEUE:-events.notification.queue}
+      RABBITMQ_RETRY_QUEUE: ${RABBITMQ_RETRY_QUEUE:-events.notification.retry.queue}
+      RABBITMQ_DLQ: ${RABBITMQ_DLQ:-events.notification.dlq}
+      MAX_RETRY_ATTEMPTS: ${MAX_RETRY_ATTEMPTS:-3}
+      RETRY_DELAY_MS: ${RETRY_DELAY_MS:-5000}
+
+  consumer:
+    build:
+      context: .
+      dockerfile: apps/consumer/Dockerfile
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    ports:
+      - '${CONSUMER_PORT:-3001}:3001'
+    environment:
+      NODE_ENV: ${NODE_ENV:-development}
+      CONSUMER_PORT: 3001
+      RABBITMQ_URL: ${RABBITMQ_URL:-amqp://guest:guest@rabbitmq:5672}
+      RABBITMQ_EXCHANGE: ${RABBITMQ_EXCHANGE:-events.exchange}
+      RABBITMQ_ROUTING_KEY: ${RABBITMQ_ROUTING_KEY:-events.notification}
+      RABBITMQ_QUEUE: ${RABBITMQ_QUEUE:-events.notification.queue}
+      RABBITMQ_RETRY_QUEUE: ${RABBITMQ_RETRY_QUEUE:-events.notification.retry.queue}
+      RABBITMQ_DLQ: ${RABBITMQ_DLQ:-events.notification.dlq}
+      RABBITMQ_PREFETCH: ${RABBITMQ_PREFETCH:-5}
+      MAX_RETRY_ATTEMPTS: ${MAX_RETRY_ATTEMPTS:-3}
+      RETRY_DELAY_MS: ${RETRY_DELAY_MS:-5000}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_DEFAULT_CHAT_ID: ${TELEGRAM_DEFAULT_CHAT_ID:-}
