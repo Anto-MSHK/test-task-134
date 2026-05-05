@@ -1,6 +1,7 @@
 import { Injectable, Logger, OnModuleDestroy, ServiceUnavailableException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import amqp, { ChannelModel, ConfirmChannel } from 'amqplib';
+import * as amqp from 'amqplib';
+import { ChannelModel, ConfirmChannel } from 'amqplib';
 
 import {
   DomainEventDto,
@@ -29,6 +30,8 @@ export class RabbitMqPublisherService implements EventPublisher, OnModuleDestroy
 
         this.logger.log({
           message: 'Event published',
+          service: 'producer',
+          status: 'published',
           eventId: event.eventId,
           eventType: event.eventType,
           correlationId: event.correlationId,
@@ -40,6 +43,8 @@ export class RabbitMqPublisherService implements EventPublisher, OnModuleDestroy
         await this.closeConnection();
         this.logger.warn({
           message: 'Event publish failed',
+          service: 'producer',
+          status: 'failed',
           eventId: event.eventId,
           eventType: event.eventType,
           correlationId: event.correlationId,
@@ -58,6 +63,10 @@ export class RabbitMqPublisherService implements EventPublisher, OnModuleDestroy
       eventId: event.eventId,
       reason: lastError instanceof Error ? lastError.message : String(lastError),
     });
+  }
+
+  isHealthy(): boolean {
+    return this.channel !== undefined;
   }
 
   async onModuleDestroy(): Promise<void> {

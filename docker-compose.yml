@@ -23,7 +23,7 @@ services:
       rabbitmq:
         condition: service_healthy
     ports:
-      - '${PRODUCER_PORT:-3000}:3000'
+      - '${PRODUCER_PORT:-3010}:3000'
     environment:
       NODE_ENV: ${NODE_ENV:-development}
       PRODUCER_PORT: 3000
@@ -44,7 +44,7 @@ services:
       rabbitmq:
         condition: service_healthy
     ports:
-      - '${CONSUMER_PORT:-3001}:3001'
+      - '${CONSUMER_PORT:-3002}:3001'
     environment:
       NODE_ENV: ${NODE_ENV:-development}
       CONSUMER_PORT: 3001

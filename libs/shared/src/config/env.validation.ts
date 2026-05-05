@@ -46,6 +46,18 @@ export class EnvironmentVariables {
   @Transform(({ value }) => Number(value))
   @IsInt()
   @Min(1)
+  RABBITMQ_CONNECTION_ATTEMPTS: number = 10;
+
+  @IsOptional()
+  @Transform(({ value }) => Number(value))
+  @IsInt()
+  @Min(0)
+  RABBITMQ_CONNECTION_RETRY_DELAY_MS: number = 1000;
+
+  @IsOptional()
+  @Transform(({ value }) => Number(value))
+  @IsInt()
+  @Min(1)
   RABBITMQ_PREFETCH: number = 5;
 
   @IsOptional()
@@ -67,6 +79,30 @@ export class EnvironmentVariables {
   @IsOptional()
   @IsString()
   TELEGRAM_DEFAULT_CHAT_ID?: string;
+
+  @IsOptional()
+  @Transform(({ value }) => Number(value))
+  @IsInt()
+  @Min(1)
+  TELEGRAM_MAX_RETRY_ATTEMPTS: number = 3;
+
+  @IsOptional()
+  @Transform(({ value }) => Number(value))
+  @IsInt()
+  @Min(0)
+  TELEGRAM_RETRY_DELAY_MS: number = 500;
+
+  @IsOptional()
+  @Transform(({ value }) => Number(value))
+  @IsInt()
+  @Min(1)
+  IDEMPOTENCY_TTL_MS: number = 86400000;
+
+  @IsOptional()
+  @Transform(({ value }) => Number(value))
+  @IsInt()
+  @Min(1)
+  IDEMPOTENCY_CLEANUP_INTERVAL_MS: number = 60000;
 }
 
 export function validateEnv(config: Record<string, unknown>): EnvironmentVariables {

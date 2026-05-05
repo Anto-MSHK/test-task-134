@@ -1,15 +1,22 @@
-import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
+import { Inject, Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { plainToInstance } from 'class-transformer';
 import { validate } from 'class-validator';
-import amqp, { Channel, ChannelModel, ConsumeMessage } from 'amqplib';
+import * as amqp from 'amqplib';
+import { Channel, ChannelModel, ConsumeMessage } from 'amqplib';
 
 import {
   DomainEventDto,
+  IdempotencyStore,
+  NotificationSender,
   RABBITMQ_DEFAULTS,
   RABBITMQ_HEADERS,
   RABBITMQ_TOPOLOGY,
 } from '@app/shared';
+
+import { IDEMPOTENCY_STORE } from '../idempotency/idempotency.constants';
+import { NOTIFICATION_SENDER } from '../telegram/telegram.constants';
+import { TelegramNotificationError } from '../telegram/telegram.errors';
 
 @Injectable()
 export class RabbitMqConsumerService implements OnModuleInit, OnModuleDestroy {
@@ -17,10 +24,20 @@ export class RabbitMqConsumerService implements OnModuleInit, OnModuleDestroy {
   private connection?: ChannelModel;
   private channel?: Channel;
 
-  constructor(private readonly configService: ConfigService) {}
+  constructor(
+    private readonly configService: ConfigService,
+    @Inject(NOTIFICATION_SENDER)
+    private readonly notificationSender: NotificationSender,
+    @Inject(IDEMPOTENCY_STORE)
+    private readonly idempotencyStore: IdempotencyStore,
+  ) {}
 
   async onModuleInit(): Promise<void> {
-    await this.start();
+    await this.startWithRetry();
+  }
+
+  isHealthy(): boolean {
+    return this.channel !== undefined;
   }
 
   async onModuleDestroy(): Promise<void> {
@@ -35,6 +52,15 @@ export class RabbitMqConsumerService implements OnModuleInit, OnModuleDestroy {
       durable: true,
     });
     await channel.assertQueue(this.getQueue(), {
+      durable: true,
+    });
+    await channel.assertQueue(this.getRetryQueue(), {
+      durable: true,
+      messageTtl: this.getRetryDelayMs(),
+      deadLetterExchange: this.getExchange(),
+      deadLetterRoutingKey: this.getRoutingKey(),
+    });
+    await channel.assertQueue(this.getDeadLetterQueue(), {
       durable: true,
     });
     await channel.bindQueue(this.getQueue(), this.getExchange(), this.getRoutingKey());
@@ -55,8 +81,35 @@ export class RabbitMqConsumerService implements OnModuleInit, OnModuleDestroy {
     this.logger.log({
       message: 'RabbitMQ consumer started',
       queue: this.getQueue(),
+      retryQueue: this.getRetryQueue(),
+      deadLetterQueue: this.getDeadLetterQueue(),
       prefetch,
     });
+  }
+
+  private async startWithRetry(): Promise<void> {
+    const maxAttempts = this.getConnectionRetryAttempts();
+    let lastError: unknown;
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      try {
+        await this.start();
+        return;
+      } catch (error) {
+        lastError = error;
+        this.logger.warn({
+          message: 'RabbitMQ consumer startup failed',
+          attempt,
+          error: error instanceof Error ? error.message : String(error),
+        });
+
+        if (attempt < maxAttempts) {
+          await this.sleep(this.getConnectionRetryDelayMs());
+        }
+      }
+    }
+
+    throw lastError;
   }
 
   private async handleMessage(channel: Channel, message: ConsumeMessage | null): Promise<void> {
@@ -71,6 +124,8 @@ export class RabbitMqConsumerService implements OnModuleInit, OnModuleDestroy {
 
       this.logger.log({
         message: 'Event received',
+        service: 'consumer',
+        status: 'received',
         eventId: event.eventId,
         eventType: event.eventType,
         correlationId: event.correlationId,
@@ -82,28 +137,15 @@ export class RabbitMqConsumerService implements OnModuleInit, OnModuleDestroy {
       channel.ack(message);
       this.logger.log({
         message: 'Event processed',
+        service: 'consumer',
+        status: 'processed',
         eventId: event.eventId,
         eventType: event.eventType,
         correlationId: event.correlationId,
         retryCount,
       });
     } catch (error) {
-      if (error instanceof InvalidEventMessageError) {
-        channel.ack(message);
-        this.logger.warn({
-          message: 'Invalid event message acknowledged',
-          error: error.message,
-          retryCount,
-        });
-        return;
-      }
-
-      channel.nack(message, false, true);
-      this.logger.error({
-        message: 'Event processing failed, message requeued',
-        retryCount: retryCount + 1,
-        error: error instanceof Error ? error.message : String(error),
-      });
+      await this.handleProcessingFailure(channel, message, error, retryCount);
     }
   }
 
@@ -133,8 +175,129 @@ export class RabbitMqConsumerService implements OnModuleInit, OnModuleDestroy {
     return event;
   }
 
-  private async processEvent(_event: DomainEventDto): Promise<void> {
-    return Promise.resolve();
+  private async processEvent(event: DomainEventDto): Promise<void> {
+    if (await this.idempotencyStore.hasProcessed(event.eventId)) {
+      this.logger.log({
+        message: 'Duplicate event skipped',
+        service: 'consumer',
+        status: 'duplicate_skipped',
+        eventId: event.eventId,
+        eventType: event.eventType,
+        correlationId: event.correlationId,
+      });
+      return;
+    }
+
+    await this.notificationSender.send(event);
+    await this.idempotencyStore.markProcessed(event.eventId);
+  }
+
+  private async handleProcessingFailure(
+    channel: Channel,
+    message: ConsumeMessage,
+    error: unknown,
+    retryCount: number,
+  ): Promise<void> {
+    try {
+      if (error instanceof InvalidEventMessageError) {
+        await this.sendToDeadLetterQueue(channel, message, retryCount, error);
+        channel.ack(message);
+        this.logger.warn({
+          message: 'Invalid event message sent to DLQ',
+          service: 'consumer',
+          status: 'dlq',
+          error: error.message,
+          retryCount,
+        });
+        return;
+      }
+
+      if (this.isRetryableError(error) && retryCount < this.getMaxRetryCount()) {
+        const nextRetryCount = retryCount + 1;
+        await this.sendToRetryQueue(channel, message, nextRetryCount, error);
+        channel.ack(message);
+        this.logger.warn({
+          message: 'Event processing failed, message sent to retry queue',
+          service: 'consumer',
+          status: 'retry',
+          retryCount: nextRetryCount,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        return;
+      }
+
+      await this.sendToDeadLetterQueue(channel, message, retryCount, error);
+      channel.ack(message);
+      this.logger.error({
+        message: 'Event processing failed, message sent to DLQ',
+        service: 'consumer',
+        status: 'dlq',
+        retryCount,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    } catch (routingError) {
+      channel.nack(message, false, true);
+      this.logger.error({
+        message: 'Failed to route failed message, original message requeued',
+        service: 'consumer',
+        status: 'requeued',
+        retryCount,
+        error: routingError instanceof Error ? routingError.message : String(routingError),
+      });
+    }
+  }
+
+  private async sendToRetryQueue(
+    channel: Channel,
+    message: ConsumeMessage,
+    retryCount: number,
+    error: unknown,
+  ): Promise<void> {
+    await this.sendToQueue(channel, this.getRetryQueue(), message, retryCount, error);
+  }
+
+  private async sendToDeadLetterQueue(
+    channel: Channel,
+    message: ConsumeMessage,
+    retryCount: number,
+    error: unknown,
+  ): Promise<void> {
+    await this.sendToQueue(channel, this.getDeadLetterQueue(), message, retryCount, error);
+  }
+
+  private async sendToQueue(
+    channel: Channel,
+    queue: string,
+    message: ConsumeMessage,
+    retryCount: number,
+    error: unknown,
+  ): Promise<void> {
+    const sent = channel.sendToQueue(queue, message.content, {
+      messageId: message.properties.messageId,
+      contentType: message.properties.contentType ?? 'application/json',
+      deliveryMode: 2,
+      persistent: true,
+      correlationId: message.properties.correlationId,
+      headers: {
+        ...message.properties.headers,
+        [RABBITMQ_HEADERS.retryCount]: retryCount,
+        'x-error-message': error instanceof Error ? error.message : String(error),
+      },
+    });
+
+    if (!sent) {
+      await new Promise<void>((resolve) => {
+        channel.once('drain', resolve);
+      });
+    }
+  }
+
+  private isRetryableError(error: unknown): boolean {
+    if (error instanceof TelegramNotificationError) {
+      return error.retryable;
+    }
+
+    return true;
   }
 
   private getRetryCount(message: ConsumeMessage): number {
@@ -168,8 +331,38 @@ export class RabbitMqConsumerService implements OnModuleInit, OnModuleDestroy {
     return this.configService.get<string>('RABBITMQ_QUEUE', RABBITMQ_TOPOLOGY.queue);
   }
 
+  private getRetryQueue(): string {
+    return this.configService.get<string>('RABBITMQ_RETRY_QUEUE', RABBITMQ_TOPOLOGY.retryQueue);
+  }
+
+  private getDeadLetterQueue(): string {
+    return this.configService.get<string>('RABBITMQ_DLQ', RABBITMQ_TOPOLOGY.deadLetterQueue);
+  }
+
   private getPrefetch(): number {
     return this.configService.get<number>('RABBITMQ_PREFETCH', RABBITMQ_DEFAULTS.prefetch);
+  }
+
+  private getRetryDelayMs(): number {
+    return this.configService.get<number>('RETRY_DELAY_MS', RABBITMQ_DEFAULTS.retryDelayMs);
+  }
+
+  private getMaxRetryCount(): number {
+    return this.configService.get<number>('MAX_RETRY_ATTEMPTS', RABBITMQ_DEFAULTS.maxRetryCount);
+  }
+
+  private getConnectionRetryAttempts(): number {
+    return this.configService.get<number>('RABBITMQ_CONNECTION_ATTEMPTS', 10);
+  }
+
+  private getConnectionRetryDelayMs(): number {
+    return this.configService.get<number>('RABBITMQ_CONNECTION_RETRY_DELAY_MS', 1000);
+  }
+
+  private sleep(delayMs: number): Promise<void> {
+    return new Promise((resolve) => {
+      setTimeout(resolve, delayMs);
+    });
   }
 
   private async closeConnection(): Promise<void> {

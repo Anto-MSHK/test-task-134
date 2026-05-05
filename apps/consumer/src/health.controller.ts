@@ -1,15 +1,18 @@
 import { Controller, Get } from '@nestjs/common';
 
-import { RABBITMQ_TOPOLOGY } from '@app/shared';
+import { RabbitMqConsumerService } from './rabbitmq/rabbitmq-consumer.service';
 
 @Controller('health')
 export class HealthController {
+  constructor(private readonly consumer: RabbitMqConsumerService) {}
+
   @Get()
-  getHealth(): { service: string; status: string; queue: string } {
+  getHealth(): { service: string; status: string; rabbitmq: string } {
+    const rabbitmqStatus = this.consumer.isHealthy() ? 'connected' : 'disconnected';
     return {
       service: 'consumer',
       status: 'ok',
-      queue: RABBITMQ_TOPOLOGY.queue,
+      rabbitmq: rabbitmqStatus,
     };
   }
 }

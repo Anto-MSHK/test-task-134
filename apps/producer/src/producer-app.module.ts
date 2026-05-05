@@ -5,6 +5,7 @@ import { validateEnv } from '@app/shared';
 
 import { EventsModule } from './events/events.module';
 import { HealthController } from './health.controller';
+import { RabbitMqPublisherModule } from './rabbitmq/rabbitmq-publisher.module';
 
 @Module({
   imports: [
@@ -12,6 +13,7 @@ import { HealthController } from './health.controller';
       isGlobal: true,
       validate: validateEnv,
     }),
+    RabbitMqPublisherModule,
     EventsModule,
   ],
   controllers: [HealthController],

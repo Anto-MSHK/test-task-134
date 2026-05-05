@@ -1,15 +1,18 @@
 import { Controller, Get } from '@nestjs/common';
 
-import { RABBITMQ_TOPOLOGY } from '@app/shared';
+import { RabbitMqPublisherService } from './rabbitmq/rabbitmq-publisher.service';
 
 @Controller('health')
 export class HealthController {
+  constructor(private readonly publisher: RabbitMqPublisherService) {}
+
   @Get()
-  getHealth(): { service: string; status: string; exchange: string } {
+  getHealth(): { service: string; status: string; rabbitmq: string } {
+    const rabbitmqStatus = this.publisher.isHealthy() ? 'connected' : 'disconnected';
     return {
       service: 'producer',
       status: 'ok',
-      exchange: RABBITMQ_TOPOLOGY.exchange,
+      rabbitmq: rabbitmqStatus,
     };
   }
 }
